@@ -16,11 +16,13 @@ NLP-based-Text-to-SQL-system/
 │   ├── catalog_builder.py           # Builds + persists the searchable Spider schema catalog
 │   ├── retriever.py                 # TF-IDF retriever: ranks databases given a NL question
 │   ├── retrieve.py                  # CLI entry point  (python -m database_retrieval.retrieve)
+│   ├── MEMBER1_HANDOFF.md           # Handoff document for Member 2 (schema linking)
 │   ├── spider_catalog.json          # [generated – not in git] schema catalog for all 166 DBs
 │   └── spider_tfidf_index.pkl       # [generated – not in git] fitted TF-IDF + vocabulary
 ├── evaluation/
 │   ├── __init__.py
 │   ├── test_schema_extractor.py     # 8 unit tests for SchemaExtractor
+│   ├── test_integration.py          # 7 Member 1 → Member 2 integration tests
 │   └── eval_retrieval.py            # Retrieval accuracy evaluation using Spider splits
 ├── README.md
 ├── requirements.txt
@@ -196,7 +198,7 @@ python -m pytest evaluation/test_schema_extractor.py -v
 python -m pytest database_retrieval/test_retriever.py -v
 ```
 
-**Current test results:** 10 passed ✅
+**Current test results:** 32 passed ✅
 
 ---
 
@@ -205,3 +207,14 @@ python -m pytest database_retrieval/test_retriever.py -v
 - **Member 1 (Database Management & Retrieval)**: `databases/`, `database_retrieval/`, `evaluation/`
 - **Member 2 (Schema Linking)**: Consumes `DatabaseRetriever.retrieve()` output to link schema elements to the SQL query
 - **Member 3+ (Text-to-SQL Model & Validation)**: Downstream pipeline components
+
+---
+
+## 🤝 Member 2 Handoff
+
+See [`database_retrieval/MEMBER1_HANDOFF.md`](database_retrieval/MEMBER1_HANDOFF.md) for the complete handoff guide including:
+- Exact retrieval output format (all field types)
+- Python API patterns Member 2 should use
+- Responsibility boundary diagram
+- Real worked example
+- Recommended integration code snippet
