@@ -84,3 +84,18 @@ databases/**/link.txt
 # Oversized Spider schema files
 databases/baseball_1/schema.sql
 databases/soccer_1/schema.sql
+
+# Generated database retrieval catalog and TF-IDF index (rebuilt locally via --build-index)
+database_retrieval/spider_catalog.json
+database_retrieval/spider_tfidf_index.pkl
+
+# Spider source metadata files (question/DB mapping - downloaded locally from Yale-Lily)
+train_spider.json
+train_others.json
+dev.json
+tables.json
+train_gold.sql
+dev_gold.sql
+test.json
+test_tables.json
+test_gold.sql

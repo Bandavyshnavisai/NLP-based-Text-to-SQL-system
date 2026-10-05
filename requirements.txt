@@ -16,3 +16,7 @@ numpy
 # Evaluation & Metrics
 tqdm
 pytest
+
+# Database Retrieval
+scikit-learn
+nltk
