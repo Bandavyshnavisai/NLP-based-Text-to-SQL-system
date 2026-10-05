@@ -1,0 +1,18 @@
+# Core Dependencies
+torch
+transformers
+datasets
+accelerate
+sqlparse
+sqlite3-to-mysql
+
+# Database and Utilities
+sqlalchemy
+pydantic
+python-dotenv
+pandas
+numpy
+
+# Evaluation & Metrics
+tqdm
+pytest
