@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+service-account*.json
+
+# Hugging Face / model caches
+.cache/
+.huggingface/
+transformers_cache/
+
+# ngrok
+.ngrok2/
+ngrok.yml
+ngrok.yml
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Uploaded/private databases
+*.db
+*.sqlite
+*.sqlite3
+databases/uploads/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
