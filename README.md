@@ -1,371 +1,404 @@
-# NLP-based Text-to-SQL System
+# NLP-Based Text-to-SQL System
 
-An end-to-end Natural Language Processing system that translates user questions in plain English into executable SQL queries.
+Full-stack natural-language-to-SQL application combining the team's Spider schema retrieval/schema-linking code with the FastAPI + Qwen + LoRA backend and React frontend.
 
-The system supports **two distinct operational modes**:
+## Main features
 
-| Mode | Input | Use case |
-|------|-------|----------|
-| **Spider Benchmark Mode** | One of 166 Spider SQLite databases | Research, evaluation, benchmarking |
-| **Dynamic User Database Mode** | Any user-supplied SQLite file | Production use with custom databases |
+- Natural-language question → SQLite SQL
+- Qwen/Qwen2.5-1.5B-Instruct + `D3v1k4/qwen-nlp-text-to-sql`
+- Dynamic upload of `.db`, `.sqlite`, `.sqlite3`
+- SQLite read-only validation and execution
+- Spider database catalog / TF-IDF retrieval
+- Schema linking and query understanding
+- **JSON cache for database metadata, schema, schema text, and static retrieval context**
+- SHA-256 cache keys so changed database files automatically receive a new cache
+- Cache status API and frontend cache status
+- Colab + ngrok workflow
+- Secrets and local database files excluded from Git
 
-> **Note:** Dynamic user databases currently support **SQLite only** (`.db`, `.sqlite`, `.sqlite3`). PostgreSQL, MySQL, and other engines are not yet supported, but the adapter architecture makes future integration straightforward.
+## JSON caching
 
----
+The cache is created the first time a SQLite database is processed.
 
-## 📁 Project Structure
+For a database whose SHA-256 is:
 
 ```text
-NLP-based-Text-to-SQL-system/
-│
-├── databases/                       # 166 Spider SQLite databases + schema files
-├── database_retrieval/              # MEMBER 1: Database Management & Retrieval
-│   ├── __init__.py                  # Exports all Mode 1 + Mode 2 classes
-│   ├── schema_extractor.py          # Extracts structured schema from any SQLite database
-│   ├── catalog_builder.py           # Builds + persists the searchable Spider schema catalog
-│   ├── retriever.py                 # TF-IDF retriever: ranks 166 Spider databases
-│   ├── retrieve.py                  # CLI (python -m database_retrieval.retrieve)
-│   ├── loader.py                    # [NEW] load_database() — Dynamic Mode entry point
-│   ├── active_database.py           # [NEW] ActiveDatabase dataclass
-│   ├── adapter.py                   # [NEW] DatabaseAdapter ABC + SQLiteAdapter
-│   ├── inspect_db.py                # [NEW] CLI (python -m database_retrieval.inspect_db)
-│   ├── MEMBER1_HANDOFF.md           # Handoff document for Member 2
-│   ├── spider_catalog.json          # [generated – not in git] schema catalog for all 166 DBs
-│   └── spider_tfidf_index.pkl       # [generated – not in git] fitted TF-IDF + vocabulary
-├── schema_linking/                  # MEMBER 2: Query Understanding & Schema Linking
-│   ├── __init__.py                  # Exports SchemaLinker, QueryUnderstanding, Models, Normalizers
-│   ├── normalizer.py                # Tokenization, singularization, query keyword preservation
-│   ├── query_understanding.py       # Intent classification, entity, operation & condition extraction
-│   ├── models.py                    # Structured dataclasses and serialization models
-│   ├── linker.py                    # Table/column matching, bridge-table detection, relationship graph
-│   ├── link.py                      # CLI (python -m schema_linking.link) — supports both modes
-│   └── test_schema_linking.py       # 20 unit tests covering Member 2 functionality
-├── tests/
-│   └── test_dynamic_database.py    # [NEW] 32 tests for Dynamic User Database Mode
-├── evaluation/
-│   ├── __init__.py
-│   ├── test_schema_extractor.py     # 8 unit tests for SchemaExtractor (Member 1)
-│   ├── test_retriever.py            # 17 unit tests for CatalogBuilder & Retriever (Member 1)
-│   ├── test_integration.py          # 7 Member 1 → Member 2 contract tests
-│   ├── test_schema_linking_integration.py # 4 end-to-end integration tests
-│   ├── eval_retrieval.py            # Member 1 retrieval evaluation on Spider
-│   └── eval_schema_linking.py       # Member 2 schema linking evaluation on Spider
-├── README.md
-├── requirements.txt
-└── .gitignore
+abc123...
 ```
 
----
+the files are stored under:
 
-## 🚀 Getting Started
+```text
+cache/database_cache/abc123.../
+├── metadata.json
+├── schema.json
+├── schema_text.json
+└── retrieval.json
+```
 
-### 1. Prerequisites
-- Python 3.9+
+### What each file contains
 
-**For Spider Benchmark Mode only:**
-- The 166 Spider SQLite databases placed under `databases/`
-  (Official source: [Yale-Lily Spider](https://yale-lily.github.io/spider))
+`metadata.json`
+- SHA-256
+- source filename/path
+- file size
+- modification timestamp
+- database name/type
+- cache version
+- confirmation that rows are not cached
 
-**For Dynamic User Database Mode:**
-- Any valid SQLite file (`.db`, `.sqlite`, or `.sqlite3`)
+`schema.json`
+- tables
+- columns
+- data types
+- primary keys
+- foreign keys
+- relationships
 
-### 2. Installation
+`schema_text.json`
+- the tokenisation-friendly schema text used by the model/retrieval layer
+
+`retrieval.json`
+- database name
+- table/column lists
+- relationships
+- cached schema text
+
+**No table rows are stored in the JSON cache.**
+
+The cache is ignored by Git because it is runtime data and can contain information derived from a user's private database.
+
+## How caching works
+
+### First upload
+
+```text
+Upload SQLite
+     ↓
+Validate SQLite
+     ↓
+SHA-256
+     ↓
+Cache exists?
+     ↓
+NO
+     ↓
+Extract metadata/schema
+     ↓
+Create schema text
+     ↓
+Create retrieval context
+     ↓
+Write 4 JSON files
+```
+
+### Subsequent query
+
+```text
+User question
+     ↓
+Database SHA-256
+     ↓
+Load existing JSON cache
+     ↓
+Use cached schema/schema text
+     ↓
+Qwen generates SQL
+     ↓
+Validate SQL
+     ↓
+Execute read-only SQL
+```
+
+The expensive database/schema preparation is therefore not repeated for every question.
+
+### Changed database
+
+If the database changes:
+
+```text
+old database → SHA-256 A → cache/A/
+modified DB  → SHA-256 B → cache/B/
+```
+
+A stale cache is not reused.
+
+## How to verify caching
+
+### Method 1 — Check the filesystem
+
+After uploading a database and processing it, look in:
+
+```text
+<project-root>/cache/database_cache/
+```
+
+You should see a directory whose name is a long SHA-256 hash.
+
+Inside it:
+
+```text
+metadata.json
+schema.json
+schema_text.json
+retrieval.json
+```
+
+Open `metadata.json` and confirm the `sha256` matches the database.
+
+### Method 2 — Use the API
+
+After selecting a database, open:
+
+```text
+GET /cache?database=<database-id>
+```
+
+For example:
+
+```text
+http://127.0.0.1:8000/cache?database=demo
+```
+
+The response reports:
+
+```json
+{
+  "cache_exists": true,
+  "cache_dir": ".../cache/database_cache/...",
+  "files": {
+    "metadata.json": {"exists": true, "path": "..."},
+    "schema.json": {"exists": true, "path": "..."},
+    "schema_text.json": {"exists": true, "path": "..."},
+    "retrieval.json": {"exists": true, "path": "..."}
+  }
+}
+```
+
+### Method 3 — Check `/query`
+
+A successful `/query` response contains:
+
+```json
+"cache": {
+  "hit": true,
+  "dir": ".../cache/database_cache/...",
+  "sha256": "..."
+}
+```
+
+On the first cache creation it reports:
+
+```json
+"hit": false
+```
+
+On later queries against the same unchanged database it should report:
+
+```json
+"hit": true
+```
+
+The frontend also displays the cache status in the result card.
+
+### Method 4 — Run the cache tests
+
+From the repository root:
+
 ```bash
-git clone https://github.com/Bandavyshnavisai/NLP-based-Text-to-SQL-system.git
-cd NLP-based-Text-to-SQL-system
-python -m venv venv
-# On Windows:
-venv\Scripts\activate
-# On Linux/macOS:
-source venv/bin/activate
+pytest tests/test_json_cache.py -q
+```
 
+The tests verify:
+1. first processing creates JSON cache files;
+2. second processing reuses the cache;
+3. modifying the database causes a new SHA-256 and new cache.
+
+## Model setup
+
+Base model:
+
+```text
+Qwen/Qwen2.5-1.5B-Instruct
+```
+
+LoRA adapter:
+
+```text
+D3v1k4/qwen-nlp-text-to-sql
+```
+
+The model is not included in Git. It is loaded at runtime.
+
+In Colab:
+
+```python
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
+
+base_id = "Qwen/Qwen2.5-1.5B-Instruct"
+adapter_id = "D3v1k4/qwen-nlp-text-to-sql"
+
+tokenizer = AutoTokenizer.from_pretrained(base_id)
+base_model = AutoModelForCausalLM.from_pretrained(base_id)
+model = PeftModel.from_pretrained(base_model, adapter_id)
+
+from backend.pipeline import pipeline
+pipeline.model.attach(model, tokenizer)
+```
+
+Run FastAPI in the same Python process after attaching the model.
+
+## Backend
+
+From repository root:
+
+```bash
+python -m venv .venv
+```
+
+Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+Linux/macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+Install:
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 3. Build the retrieval index (Spider Mode only — one-time setup)
-```bash
-python -m database_retrieval.retrieve --build-index
-```
-This scans all 166 databases, extracts schemas, writes `spider_catalog.json`, and fits + saves the TF-IDF index. To force a catalog rebuild from scratch:
-```bash
-python -m database_retrieval.retrieve --build-index --rebuild-catalog
-```
-
----
-
-## 🗂️ Two Operational Modes
-
-### Mode 1 — Spider Benchmark Mode
-
-```
-Spider Question (dev.json / train_spider.json)
-        ↓
-DatabaseRetriever.retrieve(question, top_k=5)   ← TF-IDF over 166 Spider DBs
-        ↓
-Ranked list of Spider databases + matched tables/columns
-        ↓
-SchemaLinker.link(question, target_db="concert_singer")
-        ↓
-SchemaLinkingResult → Member 3 prompt
-```
-
-**Use this mode for:** research, reproducibility, evaluation on Spider benchmark.
-
-### Mode 2 — Dynamic User Database Mode
-
-```
-User uploads any .db / .sqlite / .sqlite3 file
-        ↓
-load_database(path)                             ← validate + extract schema
-        ↓
-ActiveDatabase  (path, name, type, schema)
-        ↓
-SchemaLinker.link(question, target_schema=db.get_schema())
-        ↓
-SchemaLinkingResult → Member 3 prompt
-```
-
-**Use this mode for:** real-world deployments with custom databases.
-
-No Spider metadata required. No database catalog. No TF-IDF index.
-
----
-
-## 📌 Modules Overview
-
-### `database_retrieval/` — Database Management & Retrieval (Member 1)
-
-#### Mode 1 (Spider Benchmark) components
-
-- **`schema_extractor.py`**: Extracts tables, columns, data types, single/composite primary keys, single/composite foreign keys, and inter-table relationships from **any** SQLite file.
-- **`catalog_builder.py`**: Builds `spider_catalog.json` containing rich metadata for all 166 Spider databases.
-- **`retriever.py`**: Top-K database retrieval with match hints (`matched_tables`, `matched_columns`).
+Run the API after attaching the model:
 
 ```python
-from database_retrieval import DatabaseRetriever
+import threading
+import uvicorn
+from backend.app import app
 
-retriever = DatabaseRetriever()
-retriever.load_index()
-results = retriever.retrieve("What are the names of students enrolled in CS?", top_k=5)
+config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+server = uvicorn.Server(config)
+thread = threading.Thread(target=server.run, daemon=True)
+thread.start()
 ```
+
+## API endpoints
+
+```text
+GET  /health
+GET  /databases
+GET  /schema?database=<id>
+GET  /cache?database=<id>
+POST /upload-database
+POST /query
+```
+
+Example query:
+
+```json
+{
+  "database": "demo",
+  "question": "Show all students who scored more than 80."
+}
+```
+
+## Frontend
 
 ```bash
-python -m database_retrieval.retrieve "What are the names of students enrolled in CS?" --top-k 5
+cd frontend
+npm install
 ```
 
-#### Mode 2 (Dynamic Database) components — NEW
+Create `.env` from `.env.example`.
 
-- **`loader.py`** — `load_database(path)` validates and loads any SQLite file.
-- **`active_database.py`** — `ActiveDatabase` wraps the path, name, type, and extracted schema.
-- **`adapter.py`** — `DatabaseAdapter` ABC + `SQLiteAdapter` (foundation for future engine adapters).
-- **`inspect_db.py`** — CLI for inspecting any SQLite database and optionally running schema linking.
-
-```python
-from database_retrieval import load_database
-
-# Load and validate any SQLite database
-db = load_database("C:/path/to/company.db")
-
-print(db.database_name)   # "company"
-print(db.table_names)     # ["departments", "employees"]
-print(db.total_tables)    # 2
-
-# Pass schema directly to SchemaLinker
-from schema_linking import SchemaLinker
-linker = SchemaLinker()
-result = linker.link(
-    "What is the average salary of employees?",
-    target_schema=db.get_schema(),
-)
-```
+Windows:
 
 ```bash
-# Inspect schema only
-python -m database_retrieval.inspect_db "C:\path\company.db"
-
-# Inspect schema + run schema linking on a question
-python -m database_retrieval.inspect_db "C:\path\company.db" \
-    --question "What is the average salary of employees?"
-
-# JSON output
-python -m database_retrieval.inspect_db "C:\path\company.db" \
-    --question "List all departments" --json
+copy .env.example .env
 ```
 
-**Validation rules enforced by `load_database()`:**
-1. File must exist.
-2. Extension must be `.db`, `.sqlite`, or `.sqlite3`.
-3. File must be a valid SQLite database (checked via header magic bytes).
-4. Database must contain at least one user table (non-`sqlite_*`).
-5. Access is **always read-only** — the user's database is never modified.
-
----
-
-### `schema_linking/` — Query Understanding & Schema Linking (Member 2)
-
-Performs deterministic, explainable query understanding and maps question concepts to database tables, columns, and foreign key relationships. **Works with both Spider and user-supplied schemas.**
-
-#### Query Normalization (`normalizer.py`)
-- Lowercasing, whitespace collapsing, punctuation stripping.
-- Deterministic morphological singularization (`"singers"` → `"singer"`, `"stadiums"` → `"stadium"`).
-- Query keyword preservation: preserves `most`, `highest`, `average`, `count`, etc.
-- Multi-token n-gram extraction for compound schema identifiers.
-
-#### Query Understanding (`query_understanding.py`)
-- **Intent classification**: `count`, `ranking`, `aggregation`, `filtering`, `retrieval`.
-- **Entity extraction**: domain concept candidates.
-- **Operation extraction**: aggregations, orderings, comparisons.
-- **Condition extraction**: string literals, numeric constants, filter phrases.
-
-#### Schema Linking (`linker.py`)
-- Explainable table relevance scores (exact match 1.0 → synonym match 0.85 → token overlap 0.50–0.80).
-- Bridge/junction table detection via BFS on the FK graph.
-- Column linking (exact, synonym, condition, FK/PK inclusion).
-- **Works with any schema dict** — Spider or user-provided.
-
-**Python API:**
-```python
-from schema_linking import SchemaLinker
-
-linker = SchemaLinker()
-
-# Mode 1: Spider pipeline (retrieval → linking)
-result = linker.link("Which stadium has hosted the most concerts?")
-
-# Mode 1: Spider known-DB shortcut
-result = linker.link("What are the names of singers?", target_db="concert_singer")
-
-# Mode 2: Dynamic DB (no Spider required)
-from database_retrieval import load_database
-db = load_database("company.db")
-result = linker.link("What is the average salary?", target_schema=db.get_schema())
-
-# Access structured fields
-print("Database:", result.database)
-print("Intent:", result.intent.type, result.intent.operations)
-print("Tables:", [(t.name, t.role, t.score) for t in result.tables])
-print("Columns:", [(c.table, c.column, c.reason) for c in result.columns])
-print("Relationships:", [(r.from_table, r.to_table) for r in result.relationships])
-
-# JSON serialization
-json_output = result.to_json(indent=2)
-
-# Textual prompt for Member 3
-prompt_schema = result.to_member3_prompt()
-```
-
-**CLI:**
-```bash
-# Mode 1: Spider pipeline
-python -m schema_linking.link "Which stadium has hosted the most concerts?"
-
-# Mode 1: Target Spider database
-python -m schema_linking.link "Find students in CS." --database college_2
-
-# Mode 2: Dynamic user database (no Spider metadata needed)
-python -m schema_linking.link "What is the average salary?" --db-path company.db
-
-# JSON output (either mode)
-python -m schema_linking.link "What are the names of singers?" --json
-
-# Member 3 prompt format (either mode)
-python -m schema_linking.link "Which stadium has hosted the most concerts?" --prompt
-```
-
----
-
-## 📊 Evaluation
-
-### Member 1: Database Retrieval (Spider Benchmark)
-```bash
-python -m evaluation.eval_retrieval --split dev
-```
-
-| Metric | Accuracy (Spider Dev Set — 1,034 questions) |
-|--------|---------------------------------------------|
-| Top-1  | **67.99%** (703 / 1034)                     |
-| Top-3  | **84.14%** (870 / 1034)                     |
-| Top-5  | **89.56%** (926 / 1034)                     |
-
-### Member 2: Schema Linking (Spider Benchmark)
-```bash
-# Known-DB evaluation (isolates Member 2)
-python -m evaluation.eval_schema_linking --split dev --use-gold-db
-
-# Full pipeline evaluation (Retriever + Schema Linker)
-python -m evaluation.eval_schema_linking --split dev
-```
-
-| Metric Component | Gold DB Provided | Full Pipeline |
-|------------------|------------------|---------------|
-| **Table Linking Recall** | **91.88%** | **68.09%** |
-| **Table Linking Precision** | **78.88%** | **57.18%** |
-| **Table Linking F1** | **81.53%** | **59.71%** |
-| **Table Coverage Accuracy** | **86.56%** | **64.02%** |
-| **Column Linking Recall** | **91.04%** | **73.89%** |
-| **Column Coverage Accuracy** | **86.46%** | **71.28%** |
-| **Relationship Recall** | **90.10%** | **85.41%** |
-| **Overall Schema Coverage** | **76.98%** | **57.06%** |
-
----
-
-## 🧪 Running Tests
+Linux/macOS:
 
 ```bash
-# Run all tests (88 tests)
-python -m pytest -v
-
-# Member 1 tests (Spider)
-python -m pytest evaluation/test_schema_extractor.py database_retrieval/test_retriever.py evaluation/test_integration.py -v
-
-# Member 2 unit tests
-python -m pytest schema_linking/test_schema_linking.py -v
-
-# Member 1 → Member 2 end-to-end integration tests (Spider)
-python -m pytest evaluation/test_schema_linking_integration.py -v
-
-# Dynamic User Database Mode tests (no Spider required)
-python -m pytest tests/test_dynamic_database.py -v
+cp .env.example .env
 ```
 
-**Test suite summary:** 88 passed, 0 failed ✅
+Set:
 
-| Test module | Tests | Covers |
-|-------------|-------|--------|
-| `evaluation/test_schema_extractor.py` | 8 | Schema extraction correctness |
-| `database_retrieval/test_retriever.py` | 17 | Catalog builder + retriever |
-| `evaluation/test_integration.py` | 7 | Member 1 → Member 2 contract |
-| `schema_linking/test_schema_linking.py` | 20 | Member 2 unit tests |
-| `evaluation/test_schema_linking_integration.py` | 4 | End-to-end Spider pipeline |
-| `tests/test_dynamic_database.py` | 32 | Dynamic User Database Mode |
+```text
+VITE_API_URL=http://127.0.0.1:8000
+```
 
----
+Then:
 
-## 🔧 Team Responsibilities
+```bash
+npm run dev
+```
 
-- **Member 1 (Database Management & Retrieval)**: `databases/`, `database_retrieval/`, `evaluation/eval_retrieval.py`
-- **Member 2 (Query Understanding & Schema Linking)**: `schema_linking/`, `evaluation/eval_schema_linking.py`, `evaluation/test_schema_linking_integration.py`
-- **Member 3 (Text-to-SQL Model & Fine-Tuning)**: Consumes `SchemaLinkingResult` and `member3_prompt_schema` to generate SQL
-- **Member 4 (SQL Validation, Self-Debugging & Execution)**: Validates, debugs, and executes generated SQL against SQLite databases
+The frontend supports:
+- database selection
+- SQLite upload
+- schema viewing
+- natural-language query input
+- generated SQL
+- validation status
+- query results
+- cache status
 
----
+The ngrok browser-warning header is automatically sent by the frontend.
 
-## 🗺️ Database Support
+## Spider retrieval cache
 
-| Engine | Status | How to use |
-|--------|--------|------------|
-| **SQLite** | ✅ Full support | `load_database("file.db")` |
-| PostgreSQL | 🚧 Planned | Future `PostgreSQLAdapter` |
-| MySQL | 🚧 Planned | Future `MySQLAdapter` |
-| SQL Server | 🚧 Planned | Future `SQLServerAdapter` |
+The Spider `CatalogBuilder` now uses the same JSON cache manager.
 
-The `DatabaseAdapter` abstract base class in `database_retrieval/adapter.py` defines the extension contract. New adapters implement `validate()` and `get_schema()` — schema linking and text-to-SQL stages remain unchanged.
+When a Spider SQLite database is available, catalog construction:
 
----
+```text
+SQLite DB
+   ↓
+SHA-256
+   ↓
+JSON cache
+   ├── metadata
+   ├── schema
+   ├── schema text
+   └── retrieval context
+   ↓
+spider_catalog.json
+   ↓
+TF-IDF index
+```
 
-## 🔧 Team Responsibilities
+If the database is unchanged, schema extraction and schema-text generation are reused from the per-database JSON cache.
 
-- **Member 1 (Database Management & Retrieval)**: `databases/`, `database_retrieval/`, `evaluation/eval_retrieval.py`
-- **Member 2 (Query Understanding & Schema Linking)**: `schema_linking/`, `evaluation/eval_schema_linking.py`, `evaluation/test_schema_linking_integration.py`
-- **Member 3 (Text-to-SQL Model & Fine-Tuning)**: Consumes `SchemaLinkingResult` and `member3_prompt_schema` to generate SQL
-- **Member 4 (SQL Validation, Self-Debugging & Execution)**: Validates, debugs, and executes generated SQL against SQLite databases
+The existing `spider_catalog.json` and `spider_tfidf_index.pkl` remain generated artifacts and are excluded from Git.
+
+## Security / Git
+
+Never commit:
+- Hugging Face tokens
+- ngrok authtokens
+- `.env`
+- private database files
+- database cache files
+- `node_modules`
+- `.venv`
+- private keys
+
+Before pushing:
+
+```bash
+git status
+git add .
+git diff --cached --name-only
+```
+
+Make sure secrets and private databases are absent.
+
+Do not force-push the team's `main` branch.

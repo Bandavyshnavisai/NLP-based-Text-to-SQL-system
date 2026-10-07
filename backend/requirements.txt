@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.0
+transformers>=4.45
+peft>=0.13
+accelerate>=0.34
+torch>=2.4
