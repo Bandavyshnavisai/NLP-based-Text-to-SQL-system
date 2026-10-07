@@ -2,6 +2,15 @@
 
 An end-to-end Natural Language Processing system that translates user questions in plain English into executable SQL queries.
 
+The system supports **two distinct operational modes**:
+
+| Mode | Input | Use case |
+|------|-------|----------|
+| **Spider Benchmark Mode** | One of 166 Spider SQLite databases | Research, evaluation, benchmarking |
+| **Dynamic User Database Mode** | Any user-supplied SQLite file | Production use with custom databases |
+
+> **Note:** Dynamic user databases currently support **SQLite only** (`.db`, `.sqlite`, `.sqlite3`). PostgreSQL, MySQL, and other engines are not yet supported, but the adapter architecture makes future integration straightforward.
+
 ---
 
 ## 📁 Project Structure
@@ -11,12 +20,16 @@ NLP-based-Text-to-SQL-system/
 │
 ├── databases/                       # 166 Spider SQLite databases + schema files
 ├── database_retrieval/              # MEMBER 1: Database Management & Retrieval
-│   ├── __init__.py                  # Exports SchemaExtractor, CatalogBuilder, DatabaseRetriever
-│   ├── schema_extractor.py          # Extracts structured schema from SQLite databases
+│   ├── __init__.py                  # Exports all Mode 1 + Mode 2 classes
+│   ├── schema_extractor.py          # Extracts structured schema from any SQLite database
 │   ├── catalog_builder.py           # Builds + persists the searchable Spider schema catalog
-│   ├── retriever.py                 # TF-IDF retriever: ranks databases given a NL question
-│   ├── retrieve.py                  # CLI entry point  (python -m database_retrieval.retrieve)
-│   ├── MEMBER1_HANDOFF.md           # Handoff document for Member 2 (schema linking)
+│   ├── retriever.py                 # TF-IDF retriever: ranks 166 Spider databases
+│   ├── retrieve.py                  # CLI (python -m database_retrieval.retrieve)
+│   ├── loader.py                    # [NEW] load_database() — Dynamic Mode entry point
+│   ├── active_database.py           # [NEW] ActiveDatabase dataclass
+│   ├── adapter.py                   # [NEW] DatabaseAdapter ABC + SQLiteAdapter
+│   ├── inspect_db.py                # [NEW] CLI (python -m database_retrieval.inspect_db)
+│   ├── MEMBER1_HANDOFF.md           # Handoff document for Member 2
 │   ├── spider_catalog.json          # [generated – not in git] schema catalog for all 166 DBs
 │   └── spider_tfidf_index.pkl       # [generated – not in git] fitted TF-IDF + vocabulary
 ├── schema_linking/                  # MEMBER 2: Query Understanding & Schema Linking
@@ -25,14 +38,16 @@ NLP-based-Text-to-SQL-system/
 │   ├── query_understanding.py       # Intent classification, entity, operation & condition extraction
 │   ├── models.py                    # Structured dataclasses and serialization models
 │   ├── linker.py                    # Table/column matching, bridge-table detection, relationship graph
-│   ├── link.py                      # CLI entry point  (python -m schema_linking.link)
+│   ├── link.py                      # CLI (python -m schema_linking.link) — supports both modes
 │   └── test_schema_linking.py       # 20 unit tests covering Member 2 functionality
+├── tests/
+│   └── test_dynamic_database.py    # [NEW] 32 tests for Dynamic User Database Mode
 ├── evaluation/
 │   ├── __init__.py
 │   ├── test_schema_extractor.py     # 8 unit tests for SchemaExtractor (Member 1)
 │   ├── test_retriever.py            # 17 unit tests for CatalogBuilder & Retriever (Member 1)
 │   ├── test_integration.py          # 7 Member 1 → Member 2 contract tests
-│   ├── test_schema_linking_integration.py # 4 end-to-end integration tests (Member 1 + Member 2)
+│   ├── test_schema_linking_integration.py # 4 end-to-end integration tests
 │   ├── eval_retrieval.py            # Member 1 retrieval evaluation on Spider
 │   └── eval_schema_linking.py       # Member 2 schema linking evaluation on Spider
 ├── README.md
@@ -46,8 +61,13 @@ NLP-based-Text-to-SQL-system/
 
 ### 1. Prerequisites
 - Python 3.9+
-- The 166 Spider SQLite databases placed under `databases/`  
+
+**For Spider Benchmark Mode only:**
+- The 166 Spider SQLite databases placed under `databases/`
   (Official source: [Yale-Lily Spider](https://yale-lily.github.io/spider))
+
+**For Dynamic User Database Mode:**
+- Any valid SQLite file (`.db`, `.sqlite`, or `.sqlite3`)
 
 ### 2. Installation
 ```bash
@@ -62,14 +82,52 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Build the retrieval index (one-time setup)
+### 3. Build the retrieval index (Spider Mode only — one-time setup)
 ```bash
 python -m database_retrieval.retrieve --build-index
 ```
-This scans all 166 databases, extracts schemas, writes `spider_catalog.json`, and fits + saves the TF-IDF index. To force a catalog rebuild from scratch (e.g. after adding new databases):
+This scans all 166 databases, extracts schemas, writes `spider_catalog.json`, and fits + saves the TF-IDF index. To force a catalog rebuild from scratch:
 ```bash
 python -m database_retrieval.retrieve --build-index --rebuild-catalog
 ```
+
+---
+
+## 🗂️ Two Operational Modes
+
+### Mode 1 — Spider Benchmark Mode
+
+```
+Spider Question (dev.json / train_spider.json)
+        ↓
+DatabaseRetriever.retrieve(question, top_k=5)   ← TF-IDF over 166 Spider DBs
+        ↓
+Ranked list of Spider databases + matched tables/columns
+        ↓
+SchemaLinker.link(question, target_db="concert_singer")
+        ↓
+SchemaLinkingResult → Member 3 prompt
+```
+
+**Use this mode for:** research, reproducibility, evaluation on Spider benchmark.
+
+### Mode 2 — Dynamic User Database Mode
+
+```
+User uploads any .db / .sqlite / .sqlite3 file
+        ↓
+load_database(path)                             ← validate + extract schema
+        ↓
+ActiveDatabase  (path, name, type, schema)
+        ↓
+SchemaLinker.link(question, target_schema=db.get_schema())
+        ↓
+SchemaLinkingResult → Member 3 prompt
+```
+
+**Use this mode for:** real-world deployments with custom databases.
+
+No Spider metadata required. No database catalog. No TF-IDF index.
 
 ---
 
@@ -77,70 +135,93 @@ python -m database_retrieval.retrieve --build-index --rebuild-catalog
 
 ### `database_retrieval/` — Database Management & Retrieval (Member 1)
 
-Extracts structured relational metadata from SQLite databases and ranks database schemas given a natural language query using TF-IDF and cosine similarity.
+#### Mode 1 (Spider Benchmark) components
 
-- **`schema_extractor.py`**: Extracts tables, columns, data types, single/composite primary keys, single/composite foreign keys, and inter-table relationships.
-- **`catalog_builder.py`**: Builds `spider_catalog.json` containing rich metadata and token-friendly textual representations.
-- **`retriever.py`**: Provides Top-K database retrieval with match hints (`matched_tables`, `matched_columns`).
+- **`schema_extractor.py`**: Extracts tables, columns, data types, single/composite primary keys, single/composite foreign keys, and inter-table relationships from **any** SQLite file.
+- **`catalog_builder.py`**: Builds `spider_catalog.json` containing rich metadata for all 166 Spider databases.
+- **`retriever.py`**: Top-K database retrieval with match hints (`matched_tables`, `matched_columns`).
 
-**Python API:**
 ```python
 from database_retrieval import DatabaseRetriever
 
 retriever = DatabaseRetriever()
 retriever.load_index()
-
 results = retriever.retrieve("What are the names of students enrolled in CS?", top_k=5)
 ```
 
-**CLI:**
 ```bash
 python -m database_retrieval.retrieve "What are the names of students enrolled in CS?" --top-k 5
 ```
+
+#### Mode 2 (Dynamic Database) components — NEW
+
+- **`loader.py`** — `load_database(path)` validates and loads any SQLite file.
+- **`active_database.py`** — `ActiveDatabase` wraps the path, name, type, and extracted schema.
+- **`adapter.py`** — `DatabaseAdapter` ABC + `SQLiteAdapter` (foundation for future engine adapters).
+- **`inspect_db.py`** — CLI for inspecting any SQLite database and optionally running schema linking.
+
+```python
+from database_retrieval import load_database
+
+# Load and validate any SQLite database
+db = load_database("C:/path/to/company.db")
+
+print(db.database_name)   # "company"
+print(db.table_names)     # ["departments", "employees"]
+print(db.total_tables)    # 2
+
+# Pass schema directly to SchemaLinker
+from schema_linking import SchemaLinker
+linker = SchemaLinker()
+result = linker.link(
+    "What is the average salary of employees?",
+    target_schema=db.get_schema(),
+)
+```
+
+```bash
+# Inspect schema only
+python -m database_retrieval.inspect_db "C:\path\company.db"
+
+# Inspect schema + run schema linking on a question
+python -m database_retrieval.inspect_db "C:\path\company.db" \
+    --question "What is the average salary of employees?"
+
+# JSON output
+python -m database_retrieval.inspect_db "C:\path\company.db" \
+    --question "List all departments" --json
+```
+
+**Validation rules enforced by `load_database()`:**
+1. File must exist.
+2. Extension must be `.db`, `.sqlite`, or `.sqlite3`.
+3. File must be a valid SQLite database (checked via header magic bytes).
+4. Database must contain at least one user table (non-`sqlite_*`).
+5. Access is **always read-only** — the user's database is never modified.
 
 ---
 
 ### `schema_linking/` — Query Understanding & Schema Linking (Member 2)
 
-Performs deterministic, explainable query understanding and maps question concepts directly to database tables, columns, and foreign key relationships.
+Performs deterministic, explainable query understanding and maps question concepts to database tables, columns, and foreign key relationships. **Works with both Spider and user-supplied schemas.**
 
-#### 1. Query Normalization (`normalizer.py`)
+#### Query Normalization (`normalizer.py`)
 - Lowercasing, whitespace collapsing, punctuation stripping.
-- Deterministic morphological singularization (`"singers"` → `"singer"`, `"stadiums"` → `"stadium"`, `"cities"` → `"city"`).
-- Query keyword preservation: preserves operational words (`most`, `highest`, `lowest`, `maximum`, `average`, `count`, `between`, `before`, `after`, etc.).
+- Deterministic morphological singularization (`"singers"` → `"singer"`, `"stadiums"` → `"stadium"`).
+- Query keyword preservation: preserves `most`, `highest`, `average`, `count`, etc.
 - Multi-token n-gram extraction for compound schema identifiers.
 
-#### 2. Query Understanding (`query_understanding.py`)
+#### Query Understanding (`query_understanding.py`)
 - **Intent classification**: `count`, `ranking`, `aggregation`, `filtering`, `retrieval`.
-- **Entity extraction**: domain concept candidates (`["stadium", "concert"]`, `["singer", "name"]`).
-- **Operation extraction**: aggregations (`count`, `max`, `min`, `avg`, `sum`), orderings (`ascending`, `descending`), comparisons (`greater_than`, `less_than`, `equal`, `between`).
-- **Condition extraction**: string literals, numeric constants, and prepositional filter phrases (e.g., `'computer science'`).
+- **Entity extraction**: domain concept candidates.
+- **Operation extraction**: aggregations, orderings, comparisons.
+- **Condition extraction**: string literals, numeric constants, filter phrases.
 
-#### 3. Table Linking (`linker.py`)
-Calculates explainable relevance scores for every table in the retrieved database using:
-- Exact schema-name match ($1.00$)
-- Normalized singular/plural match ($0.95$)
-- Entity & compound multi-word match ($0.92$)
-- Synonym matching ($0.85$)
-- Junction entity overlap ($0.88$)
-- Member 1 hint boost ($0.70$)
-- Column evidence boost ($0.65$)
-- Assigns roles: `primary` (directly asked/relevant) vs. `bridge` (junction path).
-
-#### 4. Bridge / Junction Table Detection & Relationship Graph
-- Constructs an undirected graph of foreign key relationships.
-- Uses Breadth-First Search (BFS) shortest-path traversal between all primary tables.
-- Identifies intermediate junction/bridge tables (e.g., `singer_in_concert` between `singer` and `concert`, or `enrolled_in` between `student` and `department`).
-- Preserves single and composite foreign keys (`source_columns`, `target_columns`).
-
-#### 5. Column Linking
-- Matches query tokens/synonyms to table columns.
-- Automatically includes primary key columns of active tables.
-- Automatically includes foreign key join columns needed for connecting relationships.
-- Maps condition values to candidate filter columns.
-
-#### 6. Structured Hand-Off for Member 3
-Produces structured machine-readable objects and clean textual schema prompts for Member 3 (Text-to-SQL generation).
+#### Schema Linking (`linker.py`)
+- Explainable table relevance scores (exact match 1.0 → synonym match 0.85 → token overlap 0.50–0.80).
+- Bridge/junction table detection via BFS on the FK graph.
+- Column linking (exact, synonym, condition, FK/PK inclusion).
+- **Works with any schema dict** — Spider or user-provided.
 
 **Python API:**
 ```python
@@ -148,11 +229,16 @@ from schema_linking import SchemaLinker
 
 linker = SchemaLinker()
 
-# 1. Full pipeline (Retriever -> Schema Linking)
+# Mode 1: Spider pipeline (retrieval → linking)
 result = linker.link("Which stadium has hosted the most concerts?")
 
-# 2. Known database linking
+# Mode 1: Spider known-DB shortcut
 result = linker.link("What are the names of singers?", target_db="concert_singer")
+
+# Mode 2: Dynamic DB (no Spider required)
+from database_retrieval import load_database
+db = load_database("company.db")
+result = linker.link("What is the average salary?", target_schema=db.get_schema())
 
 # Access structured fields
 print("Database:", result.database)
@@ -166,21 +252,23 @@ json_output = result.to_json(indent=2)
 
 # Textual prompt for Member 3
 prompt_schema = result.to_member3_prompt()
-print(prompt_schema)
 ```
 
-**Member 2 CLI:**
+**CLI:**
 ```bash
-# Human-readable summary
+# Mode 1: Spider pipeline
 python -m schema_linking.link "Which stadium has hosted the most concerts?"
 
-# JSON output
-python -m schema_linking.link "What are the names of singers?" --json
-
-# Target database override
+# Mode 1: Target Spider database
 python -m schema_linking.link "Find students in CS." --database college_2
 
-# Member 3 prompt format
+# Mode 2: Dynamic user database (no Spider metadata needed)
+python -m schema_linking.link "What is the average salary?" --db-path company.db
+
+# JSON output (either mode)
+python -m schema_linking.link "What are the names of singers?" --json
+
+# Member 3 prompt format (either mode)
 python -m schema_linking.link "Which stadium has hosted the most concerts?" --prompt
 ```
 
@@ -188,34 +276,28 @@ python -m schema_linking.link "Which stadium has hosted the most concerts?" --pr
 
 ## 📊 Evaluation
 
-### Member 1: Database Retrieval Evaluation
+### Member 1: Database Retrieval (Spider Benchmark)
 ```bash
 python -m evaluation.eval_retrieval --split dev
 ```
 
-| Metric | Accuracy (Spider Dev Set - 1,034 questions) |
+| Metric | Accuracy (Spider Dev Set — 1,034 questions) |
 |--------|---------------------------------------------|
 | Top-1  | **67.99%** (703 / 1034)                     |
 | Top-3  | **84.14%** (870 / 1034)                     |
 | Top-5  | **89.56%** (926 / 1034)                     |
 
----
-
-### Member 2: Schema Linking Evaluation
-Evaluated against ground truth schema elements extracted from Spider gold SQL queries:
-
+### Member 2: Schema Linking (Spider Benchmark)
 ```bash
-# Evaluate Schema Linking given target database (isolates Member 2)
+# Known-DB evaluation (isolates Member 2)
 python -m evaluation.eval_schema_linking --split dev --use-gold-db
 
-# Evaluate end-to-end pipeline (Retriever + Schema Linker)
+# Full pipeline evaluation (Retriever + Schema Linker)
 python -m evaluation.eval_schema_linking --split dev
 ```
 
-#### Results on Full Spider Dev Set (1,034 examples):
-
-| Metric Component | Gold DB Provided | Full Pipeline (Retriever + Linker) |
-|------------------|------------------|------------------------------------|
+| Metric Component | Gold DB Provided | Full Pipeline |
+|------------------|------------------|---------------|
 | **Table Linking Recall** | **91.88%** | **68.09%** |
 | **Table Linking Precision** | **78.88%** | **57.18%** |
 | **Table Linking F1** | **81.53%** | **59.71%** |
@@ -223,30 +305,39 @@ python -m evaluation.eval_schema_linking --split dev
 | **Column Linking Recall** | **91.04%** | **73.89%** |
 | **Column Coverage Accuracy** | **86.46%** | **71.28%** |
 | **Relationship Recall** | **90.10%** | **85.41%** |
-| **Relationship Coverage** | **89.65%** | **85.11%** |
 | **Overall Schema Coverage** | **76.98%** | **57.06%** |
 
 ---
 
 ## 🧪 Running Tests
 
-Run the complete test suite (56 tests across Member 1 and Member 2):
-
 ```bash
-# Run all tests
+# Run all tests (88 tests)
 python -m pytest -v
 
-# Run Member 1 tests
+# Member 1 tests (Spider)
 python -m pytest evaluation/test_schema_extractor.py database_retrieval/test_retriever.py evaluation/test_integration.py -v
 
-# Run Member 2 unit tests
+# Member 2 unit tests
 python -m pytest schema_linking/test_schema_linking.py -v
 
-# Run Member 1 -> Member 2 end-to-end integration tests
+# Member 1 → Member 2 end-to-end integration tests (Spider)
 python -m pytest evaluation/test_schema_linking_integration.py -v
+
+# Dynamic User Database Mode tests (no Spider required)
+python -m pytest tests/test_dynamic_database.py -v
 ```
 
-**Test suite summary:** 56 passed, 0 failed ✅
+**Test suite summary:** 88 passed, 0 failed ✅
+
+| Test module | Tests | Covers |
+|-------------|-------|--------|
+| `evaluation/test_schema_extractor.py` | 8 | Schema extraction correctness |
+| `database_retrieval/test_retriever.py` | 17 | Catalog builder + retriever |
+| `evaluation/test_integration.py` | 7 | Member 1 → Member 2 contract |
+| `schema_linking/test_schema_linking.py` | 20 | Member 2 unit tests |
+| `evaluation/test_schema_linking_integration.py` | 4 | End-to-end Spider pipeline |
+| `tests/test_dynamic_database.py` | 32 | Dynamic User Database Mode |
 
 ---
 
@@ -254,5 +345,27 @@ python -m pytest evaluation/test_schema_linking_integration.py -v
 
 - **Member 1 (Database Management & Retrieval)**: `databases/`, `database_retrieval/`, `evaluation/eval_retrieval.py`
 - **Member 2 (Query Understanding & Schema Linking)**: `schema_linking/`, `evaluation/eval_schema_linking.py`, `evaluation/test_schema_linking_integration.py`
-- **Member 3 (Text-to-SQL Model & Fine-Tuning)**: Consumes Member 2 `SchemaLinkingResult` and `member3_prompt_schema` to generate SQL
+- **Member 3 (Text-to-SQL Model & Fine-Tuning)**: Consumes `SchemaLinkingResult` and `member3_prompt_schema` to generate SQL
+- **Member 4 (SQL Validation, Self-Debugging & Execution)**: Validates, debugs, and executes generated SQL against SQLite databases
+
+---
+
+## 🗺️ Database Support
+
+| Engine | Status | How to use |
+|--------|--------|------------|
+| **SQLite** | ✅ Full support | `load_database("file.db")` |
+| PostgreSQL | 🚧 Planned | Future `PostgreSQLAdapter` |
+| MySQL | 🚧 Planned | Future `MySQLAdapter` |
+| SQL Server | 🚧 Planned | Future `SQLServerAdapter` |
+
+The `DatabaseAdapter` abstract base class in `database_retrieval/adapter.py` defines the extension contract. New adapters implement `validate()` and `get_schema()` — schema linking and text-to-SQL stages remain unchanged.
+
+---
+
+## 🔧 Team Responsibilities
+
+- **Member 1 (Database Management & Retrieval)**: `databases/`, `database_retrieval/`, `evaluation/eval_retrieval.py`
+- **Member 2 (Query Understanding & Schema Linking)**: `schema_linking/`, `evaluation/eval_schema_linking.py`, `evaluation/test_schema_linking_integration.py`
+- **Member 3 (Text-to-SQL Model & Fine-Tuning)**: Consumes `SchemaLinkingResult` and `member3_prompt_schema` to generate SQL
 - **Member 4 (SQL Validation, Self-Debugging & Execution)**: Validates, debugs, and executes generated SQL against SQLite databases

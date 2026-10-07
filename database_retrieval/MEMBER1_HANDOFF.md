@@ -374,14 +374,45 @@ python -m pytest evaluation/test_schema_extractor.py \
 ## 10. Files Member 2 Should Import
 
 ```python
-# Primary import (everything Member 2 needs)
+# Primary import (Spider Benchmark mode)
 from database_retrieval import DatabaseRetriever
 
-# Optional — only if Member 2 needs direct schema extraction
-from database_retrieval import SchemaExtractor
+# Dynamic User Database Mode (New)
+from database_retrieval import load_database, ActiveDatabase
 
-# Optional — only if Member 2 needs to rebuild the catalog
-from database_retrieval import CatalogBuilder
+# Optional — direct schema extraction or catalog rebuilding
+from database_retrieval import SchemaExtractor, CatalogBuilder
 ```
 
 Member 2 **does not** need to import `catalog_builder`, `retrieve`, or anything from `evaluation/`.
+
+---
+
+## 11. Dynamic User Database Mode (Generalized Mode)
+
+Member 1 now provides direct ingestion of user-supplied SQLite databases, bypassing Spider-specific catalogs:
+
+```python
+from database_retrieval import load_database
+from schema_linking.linker import SchemaLinker
+
+# 1. Load any user-provided SQLite database
+active_db = load_database("path/to/custom_data.db")
+
+# 2. Extract schema directly
+schema = active_db.get_schema()
+
+# 3. Member 2 Schema Linker consumes it directly
+linker = SchemaLinker()
+result = linker.link("What is the highest salary?", target_schema=schema)
+```
+
+### CLI Support
+```bash
+# Inspect dynamic database schema
+python -m database_retrieval.inspect_db path/to/my_database.db
+
+# Schema linking against dynamic database
+python -m schema_linking.link "Show all active users" --db-path path/to/my_database.db
+```
+

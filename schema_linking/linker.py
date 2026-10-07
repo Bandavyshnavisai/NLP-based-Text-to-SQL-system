@@ -35,13 +35,35 @@ from .query_understanding import QueryUnderstanding
 
 # Domain synonym mapping for database schemas
 SYNONYM_MAP: Dict[str, Set[str]] = {
-    # Generic abbreviations
+    # Generic abbreviations & core concepts
     "num": {"number", "count", "quantity", "total", "amount"},
     "nbr": {"number", "count"},
     "no": {"number", "count", "id"},
+    "number": {"num", "count", "quantity", "total"},
     "desc": {"description", "summary", "detail", "explanation"},
+    "description": {"desc", "summary", "detail", "explanation"},
     "qty": {"quantity", "count", "amount"},
-    "dept": {"department", "division", "section"},
+    "dept": {"department", "division", "section", "branch", "unit", "engineering", "sales", "marketing", "finance", "hr", "accounting"},
+    "department": {"dept", "division", "section", "branch", "unit", "engineering", "sales", "marketing", "finance", "hr", "accounting"},
+    "engineering": {"department", "dept", "division", "field", "faculty", "major"},
+    "emp": {"employee", "staff", "worker", "person"},
+    "employee": {"emp", "staff", "worker", "person"},
+    "worker": {"employee", "emp", "staff", "person"},
+    "staff": {"employee", "emp", "worker", "person", "faculty"},
+    "mgr": {"manager", "lead", "supervisor", "director", "head"},
+    "manager": {"mgr", "lead", "supervisor", "director", "head"},
+    "proj": {"project", "task", "assignment"},
+    "project": {"proj", "task", "assignment"},
+    "sal": {"salary", "wage", "pay", "income", "compensation", "amount"},
+    "salary": {"sal", "wage", "pay", "income", "compensation", "amount"},
+    "wage": {"salary", "sal", "pay", "income"},
+    "cust": {"customer", "client", "buyer", "consumer", "patron", "user"},
+    "customer": {"cust", "client", "buyer", "consumer", "patron", "user"},
+    "client": {"customer", "cust", "buyer", "patron", "user"},
+    "order": {"purchase", "transaction", "sale"},
+    "prod": {"product", "item", "merchandise", "good"},
+    "product": {"prod", "item", "merchandise", "good"},
+    "item": {"product", "prod", "merchandise", "good"},
     "id": {"identifier", "code", "key", "number"},
     "loc": {"location", "place", "address", "city"},
     "yr": {"year", "date", "period"},
@@ -66,10 +88,8 @@ SYNONYM_MAP: Dict[str, Set[str]] = {
     "cost": {"price", "fee", "rate", "amount", "charge"},
     "price": {"cost", "fee", "rate", "amount", "charge"},
     "fee": {"cost", "price", "charge", "rate"},
-    "salary": {"wage", "pay", "income", "compensation", "amount"},
-    "wage": {"salary", "pay", "income"},
     "title": {"name", "headline", "topic"},
-    "name": {"title", "fullname", "first_name", "last_name"},
+    "name": {"title", "fullname", "first_name", "last_name", "full_name"},
     "song": {"track", "music", "tune", "title"},
     "track": {"song", "music"},
     "instructor": {"teacher", "faculty", "professor", "educator", "staff"},
@@ -77,8 +97,6 @@ SYNONYM_MAP: Dict[str, Set[str]] = {
     "faculty": {"instructor", "teacher", "professor", "staff"},
     "professor": {"instructor", "teacher", "faculty"},
     "student": {"pupil", "scholar", "learner"},
-    "customer": {"client", "buyer", "consumer", "patron", "user"},
-    "client": {"customer", "buyer", "patron"},
     "city": {"location", "town", "place"},
     "country": {"nation", "state", "land", "citizenship", "nationality"},
     "nation": {"country", "state"},
@@ -144,6 +162,73 @@ class SchemaLinker:
             self._catalog_by_name = {e["database_name"]: e for e in catalog}
 
     # ------------------------------------------------------------------
+    # Optional Database Cell-Value Matching (SQLite)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_matching_db_columns(
+        db_path: Optional[str],
+        tables: List[Dict[str, Any]],
+        candidate_values: List[str],
+    ) -> Dict[Tuple[str, str], str]:
+        """Check SQLite database for cell-value matches against question filters.
+
+        Args:
+            db_path: Path to SQLite database file.
+            tables: Tables metadata list from schema.
+            candidate_values: List of candidate literal values / filter strings.
+
+        Returns:
+            Dict mapping (table_name, column_name) -> matched_value.
+        """
+        if not db_path:
+            return {}
+        try:
+            from pathlib import Path
+            import sqlite3
+
+            p = Path(db_path)
+            if not p.is_file():
+                return {}
+
+            matches: Dict[Tuple[str, str], str] = {}
+            clean_cands: List[str] = []
+            for val in candidate_values:
+                v = str(val).strip().strip("'\"").strip()
+                if len(v) >= 2 and not v.isdigit() and v.lower() not in STANDARD_STOPWORDS:
+                    clean_cands.append(v)
+
+            if not clean_cands:
+                return {}
+
+            conn = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
+            cur = conn.cursor()
+            for tbl in tables:
+                tname = tbl["table_name"]
+                quoted_tbl = f'"{tname.replace(chr(34), chr(34)+chr(34))}"'
+                for col in tbl.get("columns", []):
+                    cname = col["name"]
+                    ctype = col.get("type", "").upper()
+                    if ctype and not any(t in ctype for t in ("CHAR", "TEXT", "CLOB", "STR")):
+                        continue
+                    quoted_col = f'"{cname.replace(chr(34), chr(34)+chr(34))}"'
+                    for cand in clean_cands:
+                        try:
+                            cur.execute(
+                                f"SELECT 1 FROM {quoted_tbl} WHERE {quoted_col} LIKE ? LIMIT 1",
+                                (f"%{cand}%",)
+                            )
+                            if cur.fetchone():
+                                matches[(tname, cname)] = cand
+                                break
+                        except sqlite3.Error:
+                            continue
+            conn.close()
+            return matches
+        except Exception:
+            return {}
+
+    # ------------------------------------------------------------------
     # Table Linking
     # ------------------------------------------------------------------
 
@@ -157,6 +242,7 @@ class SchemaLinker:
         entities: List[str],
         member1_hints: Set[str],
         column_matches_count: int,
+        has_value_match: bool = False,
     ) -> Tuple[float, str]:
         """Compute an explainable relevance score for a single table.
 
@@ -169,10 +255,15 @@ class SchemaLinker:
             entities: Extracted entities from query understanding.
             member1_hints: Set of matched table names from Member 1.
             column_matches_count: Number of columns strongly matched in this table.
+            has_value_match: True if a column in this table matched a literal cell value in the DB.
 
         Returns:
             Tuple of (score, reason).
         """
+        # 0. Direct database cell-value match on table column
+        if has_value_match:
+            return 0.95, "value_match"
+
         tbl_clean = table_name.lower().strip()
         tbl_sing = singularize(tbl_clean)
         tbl_tokens = [singularize(t) for t in split_identifier(table_name)]
@@ -242,6 +333,7 @@ class SchemaLinker:
         intent: IntentInfo,
         member1_table_hints: Optional[List[str]] = None,
         member1_column_hints: Optional[List[str]] = None,
+        tables_with_value_matches: Optional[Set[str]] = None,
     ) -> List[TableMatch]:
         """Score all tables in the schema and identify relevant candidate tables.
 
@@ -251,6 +343,7 @@ class SchemaLinker:
             intent: Query intent analysis object.
             member1_table_hints: Matched tables from Member 1 retriever.
             member1_column_hints: Matched columns from Member 1 retriever.
+            tables_with_value_matches: Optional set of table names with cell-value matches.
 
         Returns:
             List of TableMatch objects for tables in the schema.
@@ -270,10 +363,12 @@ class SchemaLinker:
                 tbl, _ = col_hint.split(".", 1)
                 col_count_by_table[tbl] = col_count_by_table.get(tbl, 0) + 1
 
+        val_tables = tables_with_value_matches or set()
         matches: List[TableMatch] = []
         for tbl in schema.get("tables", []):
             tbl_name = tbl["table_name"]
             c_count = col_count_by_table.get(tbl_name, 0)
+            has_val = tbl_name in val_tables
             score, reason = self._match_table(
                 tbl_name,
                 tbl.get("columns", []),
@@ -283,6 +378,7 @@ class SchemaLinker:
                 intent.entities,
                 hints_set,
                 c_count,
+                has_value_match=has_val,
             )
 
             # Determine initial role
@@ -490,6 +586,8 @@ class SchemaLinker:
         member1_col_hints: Set[str],
         is_pk: bool,
         is_fk: bool,
+        is_value_match: bool = False,
+        tbl_role: str = "context",
     ) -> Tuple[float, str]:
         """Compute an explainable relevance score for a column in an active table.
 
@@ -503,10 +601,16 @@ class SchemaLinker:
             member1_col_hints: Matched columns from Member 1.
             is_pk: True if column is a primary key.
             is_fk: True if column is part of a selected foreign key relationship.
+            is_value_match: True if column value matched a cell in the database.
+            tbl_role: Role of the parent table ('primary', 'bridge', 'context').
 
         Returns:
             Tuple of (score, reason).
         """
+        # 0. Direct database cell-value match
+        if is_value_match:
+            return 0.95, "condition_match"
+
         col_name = column_dict["name"]
         col_clean = col_name.lower().strip()
         col_sing = singularize(col_clean)
@@ -537,16 +641,26 @@ class SchemaLinker:
             if any(syn in q_norm_tokens for syn in synonyms):
                 return 0.85, "synonym_match"
 
-        # 5. Member 1 hint match
+        # 5. Primary entity descriptor column (e.g. name, title, <tbl>_name)
+        tbl_clean = table_name.lower().strip()
+        tbl_sing = singularize(tbl_clean)
+        if tbl_role == "primary" and (
+            col_clean in ("name", "full_name", "title")
+            or col_clean == f"{tbl_sing}_name"
+            or col_clean == f"{tbl_clean}_name"
+        ):
+            return 0.85, "entity_descriptor"
+
+        # 6. Member 1 hint match
         if full_name in member1_col_hints or col_name in member1_col_hints:
             return 0.85, "member1_hint"
 
-        # 6. Partial token overlap
+        # 7. Partial token overlap
         overlap = [t for t in col_tokens if t in q_norm_tokens and t not in ("id", "pk", "fk")]
         if overlap:
             return 0.80, "token_overlap"
 
-        # 7. Primary key column of an active table
+        # 8. Primary key column of an active table
         if is_pk:
             return 0.75, "primary_key"
 
@@ -560,6 +674,7 @@ class SchemaLinker:
         question: str,
         conditions: List[str],
         member1_column_hints: Optional[List[str]] = None,
+        value_matches: Optional[Dict[Tuple[str, str], str]] = None,
     ) -> List[ColumnMatch]:
         """Identify relevant columns for all active (primary and bridge) tables.
 
@@ -570,6 +685,7 @@ class SchemaLinker:
             question: Cleaned question string.
             conditions: Extracted query conditions.
             member1_column_hints: Member 1 column match hints.
+            value_matches: Optional dict mapping (table, column) -> matched value.
 
         Returns:
             List of ColumnMatch objects.
@@ -580,6 +696,7 @@ class SchemaLinker:
         q_ngrams.update(extract_ngrams(q_tokens, min_n=1, max_n=3))
 
         hints_set = {h.lower() for h in (member1_column_hints or [])}
+        val_map = value_matches or {}
 
         # Build sets of PK and FK columns
         fk_columns: Set[Tuple[str, str]] = set()
@@ -594,6 +711,7 @@ class SchemaLinker:
 
         for tbl_match in active_tables:
             tbl_name = tbl_match.name
+            tbl_role = tbl_match.role
             tbl_meta = table_meta_by_name.get(tbl_name)
             if not tbl_meta:
                 continue
@@ -604,6 +722,7 @@ class SchemaLinker:
                 col_name = col["name"]
                 is_pk = col_name in pks_set
                 is_fk = (tbl_name, col_name) in fk_columns
+                is_val = (tbl_name, col_name) in val_map
 
                 score, reason = self._match_column(
                     tbl_name,
@@ -615,6 +734,8 @@ class SchemaLinker:
                     hints_set,
                     is_pk,
                     is_fk,
+                    is_value_match=is_val,
+                    tbl_role=tbl_role,
                 )
 
                 # Include columns with meaningful relevance score
@@ -745,23 +866,34 @@ class SchemaLinker:
                 candidate_rank=candidate_rank,
             )
 
-        # Step 3: Table Matching
+        # Step 3: Optional Cell-Value Matching in Database
+        db_path = chosen_schema.get("database_path")
+        candidate_values = list(intent.conditions) + list(intent.entities)
+        value_matches = self._find_matching_db_columns(
+            db_path,
+            chosen_schema.get("tables", []),
+            candidate_values,
+        )
+        tables_with_values = {tbl for (tbl, _) in value_matches.keys()}
+
+        # Step 4: Table Matching
         table_matches = self.link_tables(
             chosen_schema,
             question,
             intent,
             table_hints,
             column_hints,
+            tables_with_value_matches=tables_with_values,
         )
 
-        # Step 4: Relationship Analysis & Bridge Table Detection
+        # Step 5: Relationship Analysis & Bridge Table Detection
         relationships_raw = chosen_schema.get("relationships", [])
         active_tables, selected_relationships = self.detect_bridge_tables_and_relationships(
             table_matches,
             relationships_raw,
         )
 
-        # Step 5: Column Matching
+        # Step 6: Column Matching
         column_matches = self.link_columns(
             chosen_schema,
             active_tables,
@@ -769,6 +901,7 @@ class SchemaLinker:
             question,
             intent.conditions,
             column_hints,
+            value_matches=value_matches,
         )
 
         # Step 6: Construct linked_schema dictionary

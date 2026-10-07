@@ -56,6 +56,11 @@ COMPARISON_KEYWORDS = {
     "like": ["like", "starting with", "starts with", "ending with", "ends with", "containing", "contains"],
 }
 
+# Grouping keywords mapping
+GROUPING_KEYWORDS = {
+    "group_by": ["each", "every", "per", "grouped by", "by each", "in each", "for each"],
+}
+
 # Question verbs / phrases to skip when extracting entities
 ENTITY_DISALLOWED_WORDS = {
     "what", "which", "who", "whom", "whose", "where", "when", "why", "how",
@@ -120,10 +125,9 @@ class QueryUnderstanding:
         quoted = QueryUnderstanding.extract_quoted_conditions(question)
         conditions.extend(quoted)
 
-        # 2. Extract prepositional phrases: in/for/of/with/named [phrase] [table_name]
-        # Pattern: (in|enrolled in|majoring in|from|for|with|named|called) (the)? ([A-Za-z0-9 ]+?) (department|country|city|state|year|status|category|group|type|name)?
+        # 2. Extract prepositional phrases: in/at/for/with/named [phrase] [table_name]
         matches = re.findall(
-            r"\b(?:enrolled in|majored in|majoring in|located in|born in|living in|from|named|called|with name|with status|with type|of type)\s+(?:the\s+)?([A-Za-z0-9\s]+?)(?:\s+(?:department|company|country|city|stadium|hotel|school|college|university|club|airport|team|band|season|room|building|area|district|store|branch|division|state))?(?=[,\.]|\s+who|\s+which|\s+that|\s+and|\s+or|\s+with|\s+whose|$)",
+            r"\b(?:in|at|for|working in|employed in|belonging to|enrolled in|majored in|majoring in|located in|born in|living in|from|named|called|with name|with status|with type|of type)\s+(?:the\s+)?([A-Za-z0-9\s]+?)(?:\s+(?:department|company|country|city|stadium|hotel|school|college|university|club|airport|team|band|season|room|building|area|district|store|branch|division|state))?(?=[,\.]|\s+who|\s+which|\s+that|\s+and|\s+or|\s+with|\s+whose|$)",
             question,
             re.IGNORECASE,
         )
@@ -180,10 +184,19 @@ class QueryUnderstanding:
                         detected_comparisons.append(comp_op)
                     break
 
+        detected_groupings: List[str] = []
+        for grp_op, patterns in GROUPING_KEYWORDS.items():
+            for pat in patterns:
+                if re.search(r"\b" + re.escape(pat) + r"\b", q_lower):
+                    if grp_op not in detected_groupings:
+                        detected_groupings.append(grp_op)
+                    break
+
         return {
             "aggregations": detected_aggs,
             "orderings": detected_orderings,
             "comparisons": detected_comparisons,
+            "groupings": detected_groupings,
         }
 
     @staticmethod

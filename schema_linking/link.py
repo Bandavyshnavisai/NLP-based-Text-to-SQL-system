@@ -1,10 +1,14 @@
 """CLI entry point for Schema Linking and Query Understanding.
 
-Usage:
+Usage (Spider Benchmark Mode):
     python -m schema_linking.link "Which stadium has hosted the most concerts?"
     python -m schema_linking.link "What are the names of singers?" --json
     python -m schema_linking.link "Find students in CS department." --database college_2
     python -m schema_linking.link "Which stadium has hosted the most concerts?" --prompt
+
+Usage (Dynamic User Database Mode):
+    python -m schema_linking.link "What is the average salary?" --db-path company.db
+    python -m schema_linking.link "List all employees" --db-path /path/to/hr.sqlite --json
 """
 
 import argparse
@@ -82,17 +86,35 @@ def main():
         default=None,
         help="Natural-language question to link against schema.",
     )
+
+    # --- Mode 1: Spider Benchmark Mode ---
     parser.add_argument(
         "--database", "-d",
         type=str,
         default=None,
-        help="Target database override (skips Member 1 retrieval).",
+        help=(
+            "[Mode 1 — Spider] Target Spider database name override "
+            "(skips retrieval, uses Spider catalog)."
+        ),
     )
+
+    # --- Mode 2: Dynamic User Database Mode ---
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        metavar="DB_PATH",
+        help=(
+            "[Mode 2 — Dynamic] Path to a user-supplied SQLite database file "
+            "(.db / .sqlite / .sqlite3). No Spider metadata required."
+        ),
+    )
+
     parser.add_argument(
         "--top-k", "-k",
         type=int,
         default=5,
-        help="Number of retrieved database candidates to consider (default: 5).",
+        help="Number of retrieved database candidates to consider (default: 5). Mode 1 only.",
     )
     parser.add_argument(
         "--json", "-j",
@@ -111,12 +133,34 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    if args.database and args.db_path:
+        print(
+            "[ERROR] --database (Spider mode) and --db-path (Dynamic mode) are mutually exclusive.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     linker = SchemaLinker()
-    result = linker.link(
-        question=args.question,
-        top_k=args.top_k,
-        target_db=args.database,
-    )
+
+    if args.db_path:
+        # ── Mode 2: Dynamic User Database ────────────────────────────────
+        from database_retrieval.loader import load_database
+        try:
+            active_db = load_database(args.db_path)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        result = linker.link(
+            question=args.question,
+            target_schema=active_db.get_schema(),
+        )
+    else:
+        # ── Mode 1: Spider Benchmark (or full retrieval) ─────────────────
+        result = linker.link(
+            question=args.question,
+            top_k=args.top_k,
+            target_db=args.database,
+        )
 
     if args.json:
         print(result.to_json(indent=2))
