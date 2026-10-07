@@ -1,15 +1,15 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .venv/
 venv/
 env/
+ENV/
 
-# Environment/secrets
+# Environment / secrets
 .env
 .env.*
 !.env.example
@@ -19,14 +19,13 @@ secrets.json
 credentials.json
 service-account*.json
 
-# Hugging Face / model caches
-.cache/
+# Model / tool caches
 .huggingface/
 transformers_cache/
+.cache/
 
 # ngrok
 .ngrok2/
-ngrok.yml
 ngrok.yml
 
 # Node
@@ -40,12 +39,32 @@ dist/
 *.sqlite3
 databases/uploads/
 
-# OS/editor
+# Runtime JSON caches (regenerated locally)
+cache/*
+!cache/.gitkeep
+
+# IDE / OS
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.swo
 
 # Logs
 *.log
+
+# Generated Spider retrieval artifacts
+database_retrieval/spider_catalog.json
+database_retrieval/spider_tfidf_index.pkl
+
+# Dataset metadata / generated files
+train_spider.json
+train_others.json
+dev.json
+tables.json
+train_gold.sql
+dev_gold.sql
+test.json
+test_tables.json
+test_gold.sql

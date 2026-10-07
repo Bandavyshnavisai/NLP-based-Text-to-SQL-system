@@ -16,17 +16,24 @@ class ModelService:
         self.model = model
         self.tokenizer = tokenizer
 
-    def generate(self, question: str, schema: dict) -> str:
+    def generate(self, question: str, schema: dict, schema_text: str | None = None) -> str:
         if not self.loaded:
             raise RuntimeError("Model is not attached. Load Qwen + LoRA and call pipeline.model.attach(model, tokenizer).")
-        schema_text = []
-        for table in schema.get("tables", []):
-            cols = ", ".join(f'{c["name"]} {c["type"]}' for c in table.get("columns", []))
-            schema_text.append(f'TABLE {table["name"]} ({cols})')
+        if schema_text is None:
+            schema_parts = []
+            for table in schema.get("tables", []):
+                # Support both the backend schema shape and Member-1 schema shape.
+                table_name = table.get("name") or table.get("table_name")
+                cols = ", ".join(
+                    f'{c["name"]} {c.get("type") or "TEXT"}'
+                    for c in table.get("columns", [])
+                )
+                schema_parts.append(f"TABLE {table_name} ({cols})")
+            schema_text = "\n".join(schema_parts)
         prompt = (
             "You are a Text-to-SQL system. Convert the user's natural-language question into SQLite SQL.\n"
             "Return ONLY the SQL query, with no explanation, markdown, or code fences.\n\n"
-            "Database schema:\n" + "\n".join(schema_text) +
+            "Database schema:\n" + schema_text +
             f"\n\nQuestion: {question}\nSQL:"
         )
         messages = [{"role": "user", "content": prompt}]

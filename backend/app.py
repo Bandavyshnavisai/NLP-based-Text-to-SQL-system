@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .models import QueryRequest
 from .pipeline import pipeline
-from .db import list_databases, get_schema, save_uploaded_database
+from .db import list_databases, get_schema, save_uploaded_database, get_cache_status
 
 app = FastAPI(title="NLP Text-to-SQL Backend", version="1.0.0")
 
@@ -26,6 +26,13 @@ def databases():
 def schema(database: str):
     try:
         return get_schema(database)
+    except Exception as e:
+        raise HTTPException(404, str(e))
+
+@app.get("/cache")
+def cache_status(database: str):
+    try:
+        return get_cache_status(database)
     except Exception as e:
         raise HTTPException(404, str(e))
 

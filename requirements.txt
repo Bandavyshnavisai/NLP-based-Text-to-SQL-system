@@ -1,0 +1,23 @@
+# Core / NLP
+torch
+transformers
+datasets
+accelerate
+peft
+sqlparse
+sqlite3-to-mysql
+pandas
+numpy
+tqdm
+
+# Database retrieval / schema linking
+scikit-learn
+nltk
+
+# Backend
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.0
+python-dotenv
+pytest
