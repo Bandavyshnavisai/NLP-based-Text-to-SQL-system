@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .schema_extractor import SchemaExtractor
+from .cache_manager import get_or_create_database_cache, build_schema_text, find_sqlite_database
 
 
 _DEFAULT_CATALOG_PATH = Path(__file__).parent.parent / "database_retrieval" / "spider_catalog.json"
@@ -48,99 +49,35 @@ class CatalogBuilder:
 
     @staticmethod
     def _build_schema_text(meta: Dict[str, Any]) -> str:
-        """Build a flat, human-readable textual representation of a database schema.
-
-        The representation is optimised for TF-IDF tokenisation:
-        - database name is repeated for boost
-        - table names listed
-        - each column prefixed with its table name
-        - PK/FK annotations included
-        - relationship source→target mentioned explicitly
-
-        Args:
-            meta: Schema metadata dict from SchemaExtractor.
-
-        Returns:
-            A plain-text string representing the full schema.
-        """
-        parts: List[str] = []
-
-        db_name_clean = meta["database_name"].replace("_", " ")
-        # Repeat DB name to give it higher TF weight
-        parts.append(db_name_clean)
-        parts.append(db_name_clean)
-
-        table_names_clean = [
-            t["table_name"].replace("_", " ") for t in meta["tables"]
-        ]
-        parts.append(" ".join(table_names_clean))
-
-        for tbl in meta["tables"]:
-            tbl_name = tbl["table_name"].replace("_", " ")
-            # Table name itself
-            parts.append(tbl_name)
-
-            # Primary key columns
-            for pk in tbl.get("primary_keys", []):
-                pk_clean = pk.replace("_", " ")
-                parts.append(f"{tbl_name} {pk_clean} primary key")
-
-            # Each column: table_name column_name column_type
-            for col in tbl["columns"]:
-                col_clean = col["name"].replace("_", " ")
-                col_type = col["type"]
-                parts.append(f"{tbl_name} {col_clean} {col_type}")
-
-            # Foreign key relationships expressed as prose
-            for fk in tbl.get("foreign_keys", []):
-                from_col = fk["from_column"].replace("_", " ")
-                to_tbl = fk["to_table"].replace("_", " ")
-                to_col = fk["to_column"].replace("_", " ")
-                parts.append(
-                    f"{tbl_name} {from_col} references {to_tbl} {to_col}"
-                )
-
-        # Explicit relationship phrases
-        for rel in meta.get("relationships", []):
-            src_tbl = rel["source_table"].replace("_", " ")
-            src_col = rel["source_column"].replace("_", " ")
-            tgt_tbl = rel["target_table"].replace("_", " ")
-            tgt_col = rel["target_column"].replace("_", " ")
-            parts.append(f"{src_tbl} {src_col} {tgt_tbl} {tgt_col}")
-
-        return " ".join(parts).lower()
+        """Backward-compatible wrapper around the shared cache implementation."""
+        return build_schema_text(meta)
 
     def _build_entry(self, db_name: str) -> Optional[Dict[str, Any]]:
-        """Build a single catalog entry for a database.
-
-        Args:
-            db_name: Name of the database folder.
-
-        Returns:
-            Catalog entry dict, or None if extraction fails.
-        """
+        """Build a catalog entry, reusing the per-database JSON cache."""
         try:
-            meta = self.extractor.extract_by_name(db_name)
-        except Exception as e:
+            # Resolve the file path without opening/extracting its schema.
+            # This is important: a cache hit must not rerun schema extraction.
+            db_path = find_sqlite_database(self.databases_dir, db_name)
+            cached = get_or_create_database_cache(
+                db_path,
+                database_name=db_name,
+            )
+            schema = cached["schema"]
+            retrieval = cached["retrieval"]
+        except Exception:
             return None
 
-        schema_text = self._build_schema_text(meta)
-
-        # Collect all unique table names and column names for easy matching
-        all_tables = [t["table_name"] for t in meta["tables"]]
-        all_columns = []
-        for t in meta["tables"]:
-            for col in t["columns"]:
-                all_columns.append(f"{t['table_name']}.{col['name']}")
-
         return {
-            "database_name": meta["database_name"],
-            "total_tables": meta["total_tables"],
-            "tables": meta["tables"],
-            "relationships": meta["relationships"],
-            "all_tables": all_tables,
-            "all_columns": all_columns,
-            "schema_text": schema_text,
+            "database_name": schema["database_name"],
+            "database_path": schema.get("database_path", str(db_path)),
+            "total_tables": schema["total_tables"],
+            "tables": schema["tables"],
+            "relationships": schema["relationships"],
+            "all_tables": retrieval["all_tables"],
+            "all_columns": retrieval["all_columns"],
+            "schema_text": retrieval["schema_text"],
+            "cache_key": cached["metadata"]["sha256"],
+            "cache_dir": cached["cache_dir"],
         }
 
     def build_catalog(self, verbose: bool = True) -> List[Dict[str, Any]]:

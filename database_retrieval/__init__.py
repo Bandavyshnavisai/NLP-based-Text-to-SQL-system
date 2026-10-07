@@ -22,6 +22,7 @@ from .retriever import DatabaseRetriever
 from .active_database import ActiveDatabase
 from .loader import load_database
 from .adapter import DatabaseAdapter, SQLiteAdapter, get_adapter
+from .cache_manager import get_or_create_database_cache, get_cache_info, clear_database_cache, find_sqlite_database
 
 __all__ = [
     # Mode 1 — Spider Benchmark
@@ -34,4 +35,8 @@ __all__ = [
     "DatabaseAdapter",
     "SQLiteAdapter",
     "get_adapter",
+    "get_or_create_database_cache",
+    "get_cache_info",
+    "clear_database_cache",
+    "find_sqlite_database",
 ]
